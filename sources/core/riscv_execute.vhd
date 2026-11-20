@@ -49,7 +49,9 @@ architecture beh of riscv_execute is
     signal alu_operand_b   : word;
     signal alu_result      : word;
     signal execute_result  : word;
-    signal byte_swap_input : word;
+
+    -- Resultat instruction specialisee 2.2.1
+    signal eswp_res        : word; 
 
     signal pc_plus_imm_sum : std_logic_vector(XLEN downto 0);
     signal pc_plus_imm     : word;
@@ -89,7 +91,7 @@ begin
             when (i_wb_enable = '1') and (i_wb_rd = i_ex_stage.rs2)
         else i_rs2_data;
 
-    -- src_imm choisit le deuxieme operande de l'ALU
+    -- src_imm choi                -- Inverser l'ordre des quatre octetssit le deuxieme operande de l'ALU
     -- Pour un SW, l'ALU utilise l'immediat pour calculer l'adresse tandis que rs2_value est transmis a Memory comme donnee a ecrire.
     alu_operand_b <= i_imm when i_src_imm = '1' else rs2_value;
 
@@ -129,10 +131,16 @@ begin
     -- JALR utilise rs1 + immediat et efface le bit 0
     o_pc_target <= (alu_result and JUMP_MASK) when (i_jump = '1') and (i_ex_stage.op = jalr_op) else pc_plus_imm;
 
-    -- ESWP prend son operande dans rs1 ou dans l'immediat
-    byte_swap_input <= i_imm when i_ex_stage.funct3(2) = '1' else rs1_value;
+    -- Instruction ESWP 
+    eswp : entity work.riscv_eswp_instruction
+        port map (
+            i_funct3  => i_ex_stage.funct3,
+            i_imm     => i_imm,
+            i_rs1     => rs1_value,
+            o_res     => eswp_res
+        );
 
-    -- Choisir la valeur a enregistrer dans EX/ME
+    -- Choisir la valeur a enregistrer dans EX/ME.
     process(all)
     begin
         execute_result <= alu_result;
@@ -151,12 +159,7 @@ begin
                 );
 
             when eswp_op =>
-                -- Inverser l'ordre des quatre octets
-                -- TODO: ajouter la bonne version
-                execute_result <= byte_swap_input(7 downto 0) &
-                                  byte_swap_input(15 downto 8) &
-                                  byte_swap_input(23 downto 16) &
-                                  byte_swap_input(31 downto 24);
+                execute_result <= eswp_res;
 
             when others =>
                 null;

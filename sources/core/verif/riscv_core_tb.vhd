@@ -29,16 +29,21 @@ use work.riscv_pipeline.all;
 entity riscv_core_tb is
     generic (
         MEM_FILE  : string  := "../asm/riscv_basic.mem";
-        TEST_FIBO : boolean := false
+        TEST_FIBO : boolean := false;
+        CLK_PERIOD     : time    := 100 ns;
+        CHECK_INTERNAL : boolean := true
     );
 end entity riscv_core_tb;
 
 architecture tb of riscv_core_tb is
 
     constant DEPTH  : integer := MEM_ADDR_WIDTH;
-    constant PERIOD : time := 100 ns;
+    constant PERIOD : time := CLK_PERIOD;
 
     constant FINAL_LOOP_WORD : natural := 16#D4# / 4;  -- Indice de mot 53
+
+    -- Devient vrai lorsque le programme a reussi ses tests
+    signal test_done : boolean := false;
 
     signal clk  : std_logic := '0';
     signal rstn : std_logic := '0';
@@ -61,9 +66,32 @@ architecture tb of riscv_core_tb is
     signal stalls_seen    : natural := 0;
     signal redirects_seen : natural := 0;
 
+    component riscv_core is
+        port (
+            i_rstn       : in  std_logic;
+            i_clk        : in  std_logic;
+
+            o_imem_en    : out std_logic;
+            o_imem_addr  : out std_logic_vector(8 downto 0);
+            i_imem_read  : in  std_logic_vector(31 downto 0);
+
+            o_dmem_en    : out std_logic;
+            o_dmem_we    : out std_logic;
+            o_dmem_addr  : out std_logic_vector(8 downto 0);
+            i_dmem_read  : in  std_logic_vector(31 downto 0);
+            o_dmem_write : out std_logic_vector(31 downto 0);
+
+            i_scan_en    : in  std_logic;
+            i_test_mode  : in  std_logic;
+            i_tdi        : in  std_logic;
+            o_tdo        : out std_logic
+        );
+    end component riscv_core;
+
 begin
 
-    clk <= not clk after PERIOD / 2;
+    -- Arreter l'horloge lorsque le test est termine
+    clk <= not clk after PERIOD / 2 when not test_done else '0';
     rstn <= '1' after 2 * PERIOD;
 
     MEM0 : entity work.dpm
@@ -95,7 +123,7 @@ begin
             o_b_read  => dmem_read
         );
 
-    DUT : entity work.riscv_core
+    DUT : riscv_core
         port map (
             i_rstn       => rstn,
             i_clk        => clk,
@@ -211,94 +239,99 @@ begin
             end if;
         end process;
 
-
-        check_hazards : process
-
-            alias dut_stall is
-                << signal .riscv_core_tb.DUT.stall : std_logic >>;
-            alias dut_redirect is
-                << signal .riscv_core_tb.DUT.redirect : std_logic >>;
-            alias dut_ex_stage is
-                << signal .riscv_core_tb.DUT.ex_stage : decode_state >>;
-
-            alias dut_id_valid is
-                << signal .riscv_core_tb.DUT.id_valid : std_logic >>;
-            alias dut_id_instr is
-                << signal .riscv_core_tb.DUT.id_instr : word >>;
-            alias dut_id_pc is
-                << signal .riscv_core_tb.DUT.id_pc : word >>;
-
-            alias dut_me_rw is
-                << signal .riscv_core_tb.DUT.me_rw : std_logic >>;
-            alias dut_me_rd_addr is
-                << signal .riscv_core_tb.DUT.me_rd_addr : reg_index >>;
-
-            variable stall_at_edge    : std_logic;
-            variable redirect_at_edge : std_logic;
-            variable id_instr_at_edge : word;
-            variable id_pc_at_edge    : word;
-            variable load_rd_at_edge  : reg_index;
-
+        -- Les noms internes sont accessibles pendant la simulation RTL seulement
+        internal_checks : if CHECK_INTERNAL generate
         begin
-            wait until rising_edge(clk);
 
-            if rstn = '1' then
-                -- Relever les commandes avant la mise a jour des etages
-                stall_at_edge    := dut_stall;
-                redirect_at_edge := dut_redirect;
+            check_hazards : process
 
-                -- TEST 5 : Fetch ne lance pas de lecture pendant le stall
-                -- Decode doit garder la meme instruction et meme PC
-                -- Basic doit bloquer pendant un seul cycle
-                if stall_at_edge = '1' then
-                    assert imem_en = '0'
-                        report "ECHEC TEST 5 : Fetch lit pendant le stall"
-                        severity failure;
+                alias dut_stall is
+                    << signal .riscv_core_tb.DUT.stall : std_logic >>;
+                alias dut_redirect is
+                    << signal .riscv_core_tb.DUT.redirect : std_logic >>;
+                alias dut_ex_stage is
+                    << signal .riscv_core_tb.DUT.ex_stage : decode_state >>;
 
-                    id_instr_at_edge := dut_id_instr;
-                    id_pc_at_edge    := dut_id_pc;
-                    load_rd_at_edge  := dut_ex_stage.rd;
+                alias dut_id_valid is
+                    << signal .riscv_core_tb.DUT.id_valid : std_logic >>;
+                alias dut_id_instr is
+                    << signal .riscv_core_tb.DUT.id_instr : word >>;
+                alias dut_id_pc is
+                    << signal .riscv_core_tb.DUT.id_pc : word >>;
 
-                    stalls_seen <= stalls_seen + 1;
+                alias dut_me_rw is
+                    << signal .riscv_core_tb.DUT.me_rw : std_logic >>;
+                alias dut_me_rd_addr is
+                    << signal .riscv_core_tb.DUT.me_rd_addr : reg_index >>;
+
+                variable stall_at_edge    : std_logic;
+                variable redirect_at_edge : std_logic;
+                variable id_instr_at_edge : word;
+                variable id_pc_at_edge    : word;
+                variable load_rd_at_edge  : reg_index;
+
+            begin
+                wait until rising_edge(clk);
+
+                if rstn = '1' then
+                    -- Relever les commandes avant la mise a jour des etages
+                    stall_at_edge    := dut_stall;
+                    redirect_at_edge := dut_redirect;
+
+                    -- TEST 5 : Fetch ne lance pas de lecture pendant le stall
+                    -- Decode doit garder la meme instruction et meme PC
+                    -- Basic doit bloquer pendant un seul cycle
+                    if stall_at_edge = '1' then
+                        assert imem_en = '0'
+                            report "ECHEC TEST 5 : Fetch lit pendant le stall"
+                            severity failure;
+
+                        id_instr_at_edge := dut_id_instr;
+                        id_pc_at_edge    := dut_id_pc;
+                        load_rd_at_edge  := dut_ex_stage.rd;
+
+                        stalls_seen <= stalls_seen + 1;
+                    end if;
+
+                    -- TEST 6 : Fetch ne lit pas sur le mauvais chemin
+                    -- L'instruction en Decode doit avoir ete remplace par une bubble dans Execute
+                    -- Doit avoir une redirection
+                    if redirect_at_edge = '1' then
+                        assert imem_en = '0'
+                            report "ECHEC TEST 6 : Fetch lit pendant la redirection"
+                            severity failure;
+
+                        redirects_seen <= redirects_seen + 1;
+                    end if;
+
+                    -- Laisser les sorties des registres se mettre a jour
+                    wait for 1 ns;
+
+                    if stall_at_edge = '1' then
+                        assert dut_ex_stage.valid = '0'
+                            report "ECHEC TEST 5 : aucune bulle apres le stall"
+                            severity failure;
+
+                        assert dut_id_valid = '1'
+                            and dut_id_instr = id_instr_at_edge
+                            and dut_id_pc = id_pc_at_edge
+                            report "ECHEC TEST 5 : instruction perdue ou modifiee en ID"
+                            severity failure;
+
+                        assert dut_me_rw = '1' and dut_me_rd_addr = load_rd_at_edge
+                            report "ECHEC TEST 5 : le LW n'a pas avance vers Memory"
+                            severity failure;
+                    end if;
+
+                    if redirect_at_edge = '1' then
+                        assert dut_ex_stage.valid = '0'
+                            report "ECHEC TEST 6 : Decode avance malgre le flush"
+                            severity failure;
+                    end if;
                 end if;
+            end process check_hazards;
 
-                -- TEST 6 : Fetch ne lit pas sur le mauvais chemin
-                -- L'instruction en Decode doit avoir ete remplace par une bubble dans Execute
-                -- Doit avoir une redirection
-                if redirect_at_edge = '1' then
-                    assert imem_en = '0'
-                        report "ECHEC TEST 6 : Fetch lit pendant la redirection"
-                        severity failure;
-
-                    redirects_seen <= redirects_seen + 1;
-                end if;
-
-                -- Laisser les sorties des registres se mettre a jour
-                wait for 1 ns;
-
-                if stall_at_edge = '1' then
-                    assert dut_ex_stage.valid = '0'
-                        report "ECHEC TEST 5 : aucune bulle apres le stall"
-                        severity failure;
-
-                    assert dut_id_valid = '1'
-                        and dut_id_instr = id_instr_at_edge
-                        and dut_id_pc = id_pc_at_edge
-                        report "ECHEC TEST 5 : instruction perdue ou modifiee en ID"
-                        severity failure;
-
-                    assert dut_me_rw = '1' and dut_me_rd_addr = load_rd_at_edge
-                        report "ECHEC TEST 5 : le LW n'a pas avance vers Memory"
-                        severity failure;
-                end if;
-
-                if redirect_at_edge = '1' then
-                    assert dut_ex_stage.valid = '0'
-                        report "ECHEC TEST 6 : Decode avance malgre le flush"
-                        severity failure;
-                end if;
-            end if;
-        end process check_hazards;
+        end generate internal_checks;
 
         finish_test : process
         begin
@@ -312,18 +345,22 @@ begin
                 report "ECHEC : le nombre de lectures ou d'ecritures est incorrect"
                 severity failure;
 
-            assert stalls_seen = 1
-                report "ECHEC TEST 5 : Basic doit bloquer pendant un seul cycle"
-                severity failure;
+            if CHECK_INTERNAL then
 
-            assert redirects_seen > 0
-                report "ECHEC TEST 6 : aucune redirection observee"
-                severity failure;
+                assert stalls_seen = 1
+                    report "ECHEC TEST 5 : Basic doit bloquer pendant un seul cycle"
+                    severity failure;
+
+                assert redirects_seen > 0
+                    report "ECHEC TEST 6 : aucune redirection observee"
+                    severity failure;
+
+            end if;
 
             report "SUCCES : riscv_basic a termine les acces attendus et atteint sa boucle finale."
                 severity note;
 
-            std.env.stop;
+            test_done <= true;
             wait;
         end process;
 
@@ -350,7 +387,8 @@ begin
 
                     report "SUCCES : Fibo a ecrit 0E0E0E0E."
                         severity note;
-                    std.env.stop;
+
+                    test_done <= true;
                     wait;
                 end if;
             end loop;

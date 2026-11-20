@@ -1,14 +1,16 @@
-proc prepare_work {} {
+proc prepare_work {{directory "beh"}} {
     if {![file exists "modelsim.ini"]} {
         vmap -c
     }
 
-    file mkdir beh
-    if {![file isdirectory "beh/work"]} {
-        vlib beh/work
+    file mkdir $directory
+    set library "$directory/work"
+
+    if {![file isdirectory $library]} {
+        vlib $library
     }
 
-    vmap work beh/work
+    vmap work $library
 }
 
 proc compile_rtl {} {
@@ -18,7 +20,6 @@ proc compile_rtl {} {
         riscv_pc
         riscv_rf
         riscv_alu
-        dpm
     } {
         vcom -2008 -work work "../sources/common/${name}.vhd"
     }
@@ -27,6 +28,7 @@ proc compile_rtl {} {
         riscv_pipeline_pkg
         riscv_fetch
         riscv_decode
+        riscv_eswp_instruction
         riscv_execute
         riscv_memory_access
         riscv_write_back
